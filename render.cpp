@@ -18,8 +18,8 @@ fft-overlap-add-threads: overlap-add framework doing FFT in a low-priority threa
 
 // FFT-related variables
 Fft gFft;					// FFT processing object
-const int gFftSize = 1024;	// FFT window size in samples
-const int gHopSize = 256;	// How often we calculate a window
+const int gFftSize = 512;	// FFT window size in samples
+const int gHopSize = 512;	// How often we calculate a window
 
 // Circular buffer and pointer for assembling a window of samples
 const int gBufferSize = 16384;
@@ -49,6 +49,12 @@ unsigned int gAudioFramesPerAnalogFrame;
 int gSensorCh = 0;
 
 void process_fft_background(void *);
+
+void Bela_userSettings(BelaInitSettings *settings)
+{
+    // settings->audioThreadStackSize = (1 << 24);
+    // settings->auxiliaryTaskStackSize = (1 << 24);
+}
 
 bool setup(BelaContext *context, void *userData)
 {
@@ -98,24 +104,25 @@ void process_fft(std::vector<float> const& inBuffer, unsigned int inPointer, std
 		unwrappedBuffer[n] = inBuffer[circularBufferIndex];
 	}
 
-	float* input = interpreter->typed_input_tensor<float>(0);
 
-    // Dummy input for testing
-    *input = 2.0;
-    rt_printf("Input is: %.2f\n", *input);
+	float* input = interpreter->typed_input_tensor<float>(0);
+	for (int i=0; i<unwrappedBuffer.size(); i++){
+		*input = (float)unwrappedBuffer[i];
+		input++;
+	}
+	rt_printf("Input[0] %.2f \n", *input);
 
     interpreter->Invoke();
 
     float* output = interpreter->typed_output_tensor<float>(0);
-    rt_printf("Result is: %.2f\n", *output);
+	rt_printf("Output[0] %.2f \n", *output);
 
-	
 	// Add timeDomainOut into the output buffer starting at the write pointer
-	for(int n = 0; n < gFftSize; n++) {
+	for(int n = 0; n < unwrappedBuffer.size(); n++) {
 		int circularBufferIndex = (outPointer + n) % gBufferSize;
-		outBuffer[circularBufferIndex] += unwrappedBuffer[n];
+		outBuffer[circularBufferIndex] = *output;
+		output++;
 	}
-
 }
 
 // This function runs in an auxiliary task on Bela, calling process_fft
