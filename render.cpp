@@ -10,6 +10,11 @@ fft-overlap-add-threads: overlap-add framework doing FFT in a low-priority threa
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/tools/gen_op_registration.h"
+#include "AppOptions.h"
 
 // FFT-related variables
 Fft gFft;					// FFT processing object
@@ -34,14 +39,20 @@ Scope gScope;
 AuxiliaryTask gFftTask;
 int gCachedInputBufferPointer = 0;
 
-unsigned int gAudioFramesPerAnalogFrame;
+// Tf related vars
+std::unique_ptr<tflite::FlatBufferModel> model;
+tflite::ops::builtin::BuiltinOpResolver resolver;
+std::unique_ptr<tflite::Interpreter> interpreter;
 
+// Sensor related vars
+unsigned int gAudioFramesPerAnalogFrame;
 int gSensorCh = 0;
 
 void process_fft_background(void *);
 
 bool setup(BelaContext *context, void *userData)
 {
+	printf("analog sample rate: %.1f\n", context->analogSampleRate);
 	
 	// Set up the FFT and its buffers
 	gFft.setup(gFftSize);
@@ -52,8 +63,23 @@ bool setup(BelaContext *context, void *userData)
 	// Set up the thread for the FFT
 	gFftTask = Bela_createAuxiliaryTask(process_fft_background, 50, "bela-process-fft");
 
+	// rate of audio frames per analog frame
 	if (context->analogFrames) gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames;
 
+	// Load tflite model (passed through -m)
+    AppOptions *opts = reinterpret_cast<AppOptions *>(userData);
+
+    model = tflite::FlatBufferModel::BuildFromFile(opts->modelPath.c_str());
+        if(!model){
+        printf("Failed to mmap model\n");
+        return false;
+    }
+
+	// Build Tf interpreter
+	tflite::InterpreterBuilder(*model.get(), resolver)(&interpreter);
+
+	// Allocate tensors
+	interpreter->AllocateTensors();
 
 	return true;
 }
@@ -71,24 +97,23 @@ void process_fft(std::vector<float> const& inBuffer, unsigned int inPointer, std
 		int circularBufferIndex = (inPointer + n - gFftSize + gBufferSize) % gBufferSize;
 		unwrappedBuffer[n] = inBuffer[circularBufferIndex];
 	}
-	
-	// Process the FFT based on the time domain input
-	gFft.fft(unwrappedBuffer);
-		
-	// Robotise the output
-	// for(int n = 0; n < gFftSize; n++) {
-	// 	float amplitude = gFft.fda(n);
-	// 	gFft.fdr(n) = amplitude;
-	// 	gFft.fdi(n) = 0;
-	// }
-		
-	// Run the inverse FFT
-	gFft.ifft();
+
+	float* input = interpreter->typed_input_tensor<float>(0);
+
+    // Dummy input for testing
+    *input = 2.0;
+    rt_printf("Input is: %.2f\n", *input);
+
+    interpreter->Invoke();
+
+    float* output = interpreter->typed_output_tensor<float>(0);
+    rt_printf("Result is: %.2f\n", *output);
+
 	
 	// Add timeDomainOut into the output buffer starting at the write pointer
 	for(int n = 0; n < gFftSize; n++) {
 		int circularBufferIndex = (outPointer + n) % gBufferSize;
-		outBuffer[circularBufferIndex] += gFft.td(n);
+		outBuffer[circularBufferIndex] += unwrappedBuffer[n];
 	}
 
 }
