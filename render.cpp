@@ -5,24 +5,32 @@ fft-overlap-add-threads: overlap-add framework doing FFT in a low-priority threa
 
 #include <Bela.h>
 #include <libraries/Fft/Fft.h>
-#include <libraries/Scope/Scope.h>
 #include <cmath>
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include <libraries/Scope/Scope.h>
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/tools/gen_op_registration.h"
+#include "tensorflow/lite/optional_debug_tools.h"
 #include "AppOptions.h"
 
+#define TFLITE_MINIMAL_CHECK(x)                              \
+  if (!(x)) {                                                \
+    fprintf(stderr, "Error at %s:%d\n", __FILE__, __LINE__); \
+    exit(1);                                                 \
+  }
+
+
+
 // FFT-related variables
-Fft gFft;					// FFT processing object
-const int gFftSize = 512;	// FFT window size in samples
-const int gHopSize = 512;	// How often we calculate a window
+const int gFftSize = 32;	// FFT window size in samples
+const int gHopSize = 3*32;	// How often we calculate a window
 
 // Circular buffer and pointer for assembling a window of samples
-const int gBufferSize = 16384;
+const int gBufferSize = 3*32;
 std::vector<float> gInputBuffer(gBufferSize);
 int gInputBufferPointer = 0;
 int gHopCounter = 0;
@@ -34,7 +42,6 @@ int gOutputBufferReadPointer = 0;
 
 // Bela oscilloscope
 Scope gScope;
-
 // Thread for FFT processing
 AuxiliaryTask gFftTask;
 int gCachedInputBufferPointer = 0;
@@ -48,6 +55,13 @@ std::unique_ptr<tflite::Interpreter> interpreter;
 unsigned int gAudioFramesPerAnalogFrame;
 int gSensorCh = 0;
 
+// sinusoidal
+float gPhase_in;
+float gPhase_out;
+
+float gInverseSampleRate;
+float gAmplitude = 0.5;
+
 void process_fft_background(void *);
 
 void Bela_userSettings(BelaInitSettings *settings)
@@ -59,12 +73,15 @@ void Bela_userSettings(BelaInitSettings *settings)
 bool setup(BelaContext *context, void *userData)
 {
 	printf("analog sample rate: %.1f\n", context->analogSampleRate);
-	
-	// Set up the FFT and its buffers
-	gFft.setup(gFftSize);
 
-	// Initialise the scope
-	gScope.setup(2, context->audioSampleRate);
+	gScope.setup(3, context->audioSampleRate);
+
+	gInverseSampleRate = 1.0 / context->audioSampleRate;
+	gPhase_in = 0.0;
+	gPhase_out = 0.0;
+
+	
+
 	
 	// Set up the thread for the FFT
 	gFftTask = Bela_createAuxiliaryTask(process_fft_background, 50, "bela-process-fft");
@@ -107,16 +124,14 @@ void process_fft(std::vector<float> const& inBuffer, unsigned int inPointer, std
 
 	float* input = interpreter->typed_input_tensor<float>(0);
 	for (int i=0; i<unwrappedBuffer.size(); i++){
-		*input = (float)unwrappedBuffer[i];
+		*input = unwrappedBuffer[i];
 		input++;
 	}
-	rt_printf("Input[0] %.2f \n", *input);
 
-    interpreter->Invoke();
+	TFLITE_MINIMAL_CHECK(interpreter->Invoke() == kTfLiteOk);
 
     float* output = interpreter->typed_output_tensor<float>(0);
-	rt_printf("Output[0] %.2f \n", *output);
-
+		
 	// Add timeDomainOut into the output buffer starting at the write pointer
 	for(int n = 0; n < unwrappedBuffer.size(); n++) {
 		int circularBufferIndex = (outPointer + n) % gBufferSize;
@@ -136,10 +151,19 @@ void process_fft_background(void *)
 
 void render(BelaContext *context, void *userData)
 {
+
 	for(unsigned int n = 0; n < context->audioFrames; n++) {
 
         // Read the sensor value
         float in = analogRead(context, n/gAudioFramesPerAnalogFrame, gSensorCh);
+		float frequency = 220;
+		float _in = in * sinf(gPhase_in);
+
+		// Update and wrap phase of sine tone
+		gPhase_in += 2.0f * (float)M_PI * frequency * gInverseSampleRate;
+		if(gPhase_in > M_PI)
+			gPhase_in -= 2.0f * (float)M_PI;
+
 
 		// Store the sample ("in") in a buffer for the FFT
 		// Increment the pointer and when full window has been 
@@ -150,15 +174,19 @@ void render(BelaContext *context, void *userData)
 			// Notice: this is not the condition for starting a new FFT
 			gInputBufferPointer = 0;
 		}
-		
+		gPhase_out += 2.0f * (float)M_PI * frequency * gInverseSampleRate;
+		if(gPhase_out > M_PI)
+			gPhase_out -= 2.0f * (float)M_PI;
 		// Get the output sample from the output buffer
 		float out = gOutputBuffer[gOutputBufferReadPointer];
+		frequency = 440;
+		float _out = out * sinf(gPhase_out);
 		
 		// Then clear the output sample in the buffer so it is ready for the next overlap-add
 		gOutputBuffer[gOutputBufferReadPointer] = 0;
 		
 		// Scale the output down by the overlap factor (e.g. how many windows overlap per sample?)
-		out *= (float)gHopSize / (float)gFftSize;
+		// out *= (float)gHopSize / (float)gFftSize;
 		
 		// Increment the read pointer in the output cicular buffer
 		gOutputBufferReadPointer++;
@@ -168,15 +196,13 @@ void render(BelaContext *context, void *userData)
 		// Increment the hop counter and start a new FFT if we've reached the hop size
 		if(++gHopCounter >= gHopSize) {
 			gHopCounter = 0;
-			
 			gCachedInputBufferPointer = gInputBufferPointer;
 			Bela_scheduleAuxiliaryTask(gFftTask);
 		}
 
 		// Write the audio input to left channel, output to the right channel, both to the scope
-		audioWrite(context, n, 0, in);
-		audioWrite(context, n, 1, out);
-		gScope.log(in, out);
+		audioWrite(context, n, 0, _out);
+		audioWrite(context, n, 1, _out);
 	}
 }
 
