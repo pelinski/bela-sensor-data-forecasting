@@ -13,6 +13,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake/")
 
 add_compile_options(-march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -Wno-psabi)
 add_compile_options(-O3 -g -fPIC -ftree-vectorize -ffast-math)
+# add_compile_options(-O0 -g -fPIC -ftree-vectorize -ffast-math) # for debugging
 add_compile_definitions(DXENOMAI_SKIN_posix)
 
 ####################################
