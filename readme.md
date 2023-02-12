@@ -1,0 +1,3 @@
+# 5 - Model inference (in Bela)
+
+This code runs a TFLite model in real-time in Bela, provided that the model is light enough. The inference runs in a thread with a lower priority thread than the audio thread to avoid underruns. Follow the instructions in step 4 to clone this repo inside of the docker container, cross-compile the program and copy the Bela-compatible executable into your Bela board. 

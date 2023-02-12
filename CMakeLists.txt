@@ -1,5 +1,3 @@
-# Author: Rodrigo Diaz (@rodrigodzf)[https://github.com/rodrigodzf]
-
 cmake_minimum_required(VERSION 3.18)
 project(sensor-data-forecasting VERSION 0.0.0)
 

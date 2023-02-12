@@ -1,10 +1,3 @@
-/*
- * main.cpp
- *
- *  Created on: Oct 24, 2014
- *      Author: parallels
- */
-
 #include <unistd.h>
 #include <iostream>
 #include <cstdlib>
